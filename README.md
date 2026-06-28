@@ -43,3 +43,37 @@ stateDiagram-v2
     Resuming --> Active_Execution: KV Cache restored, prefix-cached
     Active_Execution --> [*]: Task Completed
     Suspended_Frozen --> [*]: Timeout / Error
+```
+
+🎯 Key Benefits
+
+Zero-Token Waiting: A suspended model consumes exactly zero tokens and zero compute while waiting.
+Absolute Determinism: Strictly prevents the model from hallucinating or simulating the outcomes of awaited tasks.
+Instant Resumption: Tiered KV cache eviction and prefix caching ensure resumption requires no re-evaluation of historical context.
+Cryptographic Integrity: Signed routing hashes prevent state hijacking, cross-talk, and replay attacks.
+
+📖 Read the Full Specification
+This repository contains the formal Request for Comments (RFC) for the protocol.
+
+👉 Read the Full RFC 001 Specification Here
+The spec covers:
+Transformer Execution State Updates
+Tiered KV Cache Eviction Strategies (VRAM -> RAM -> NVMe)
+Cryptographic Rationale for dispatch_hash
+Safety Implications & Prompt Injection Mitigations
+Reference Implementations for the Inference Engine and Orchestrator
+
+🤝 Call for Contributors
+This protocol requires changes at the inference engine level to reach its full potential. We are actively seeking collaboration from maintainers and contributors of:
+Inference Engines: vLLM, SGLang, TensorRT-LLM, llama.cpp
+Agent Frameworks: LangGraph, CrewAI, AutoGen
+How to help:
+Review the SPEC.md and open an Issue with your feedback.
+Help us build a Proof of Concept (PoC) using SGLang's RadixAttention or vLLM's prefix caching to benchmark the token savings.
+Submit PRs to refine the JSON schemas or cryptographic routing mechanisms.
+
+📜 License
+This specification and reference implementations are released under the MIT License. We encourage widespread adoption, implementation, and modification across the open-source AI ecosystem.
+“Just as TCP/IP gave us reliable packets, and HTTP gave us request/response, Dispatch-Wait gives us reliable, stateful, asynchronous agentic execution.”
+
+
