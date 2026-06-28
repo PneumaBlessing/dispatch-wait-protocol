@@ -45,6 +45,7 @@ stateDiagram-v2
     Suspended_Frozen --> [*]: Timeout / Error
 ```
 
+```
 🎯 Key Benefits
 
 Zero-Token Waiting: A suspended model consumes exactly zero tokens and zero compute while waiting.
@@ -75,5 +76,5 @@ Submit PRs to refine the JSON schemas or cryptographic routing mechanisms.
 📜 License
 This specification and reference implementations are released under the MIT License. We encourage widespread adoption, implementation, and modification across the open-source AI ecosystem.
 “Just as TCP/IP gave us reliable packets, and HTTP gave us request/response, Dispatch-Wait gives us reliable, stateful, asynchronous agentic execution.”
-
+```
 
