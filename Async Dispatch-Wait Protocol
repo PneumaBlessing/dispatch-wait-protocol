@@ -91,12 +91,59 @@ Mitigation: The Orchestrator must enforce a strict Time-To-Live (TTL) on frozen 
 Below is pseudo-code demonstrating the required logic for the core components.
 
 8.1. Model Inference Engine (KV Cache Management)
-python
-123456789101112131415161718192021222324
+
+```python
+class DispatchAwareInferenceEngine:
+    def generate(self, context, kv_cache=None):
+        # 1. Load frozen KV cache if resuming (Prefix Caching)
+        if kv_cache:
+            self.attention_layers.load_kv(kv_cache)
+            
+        for token in self.decode_next_tokens(context):
+            if self.parser.is_dispatch_wait_ack(token):
+                # 2. Suspend: Freeze and serialize KV cache
+                frozen_kv = self.attention_layers.freeze_kv()
+                storage.save(context.dispatch_hash, frozen_kv)
+                return SuspendSignal(hash=context.dispatch_hash)
+                
+            yield token
+
+    def resume(self, dispatch_hash, resume_payload):
+        # 3. Verify cryptographic signature
+        if not crypto.verify(resume_payload.signature):
+            raise SecurityViolationError()
+            
+        # 4. Restore KV cache and continue generation
+        kv_cache = storage.load(dispatch_hash)
+        new_context = append_to_context(resume_payload)
+        return self.generate(new_context, kv_cache=kv_cache)
+```
+
 
 8.2. Orchestrator (State & Routing)
-python
-1234567891011121314151617181920
+
+```python
+class AgentOrchestrator:
+    def dispatch_task(self, sub_agent, task):
+        dispatch_hash = crypto.generate_signed_hash(task_id)
+        context = build_context(task, dispatch_hash)
+        
+        # Trigger model generation
+        result = inference_engine.generate(context)
+        
+        if isinstance(result, SuspendSignal):
+            # Park the context, do not poll!
+            self.state_db.park_context(result.hash, status="WAITING")
+            return "Task suspended. Awaiting external event."
+
+    def handle_external_event(self, task_id, result_data):
+        dispatch_hash = self.state_db.get_hash(task_id)
+        resume_payload = build_resume_payload(dispatch_hash, result_data)
+        
+        # Trigger model resumption
+        inference_engine.resume(dispatch_hash, resume_payload)
+        self.state_db.unpark_context(dispatch_hash)
+```
 
 9. Future Extensions
 
