@@ -56,7 +56,7 @@ Cryptographic Integrity: Signed routing hashes prevent state hijacking, cross-ta
 📖 Read the Full Specification
 This repository contains the formal Request for Comments (RFC) for the protocol.
 
-👉 Read the Full RFC 001 Specification Here
+👉 Read the Full RFC 001 Specification Here: Async Dispatch-Wait Protocol
 The spec covers:
 Transformer Execution State Updates
 Tiered KV Cache Eviction Strategies (VRAM -> RAM -> NVMe)
