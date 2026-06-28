@@ -33,9 +33,16 @@ Cross-Vendor KV Portability: This spec assumes a homogeneous model environment; 
 3. Protocol Overview & State Diagram
 The protocol defines a strict 4-state execution lifecycle for the model inference engine.
 
-mermaid
-Code
-Preview
+```mermaid
+stateDiagram-v2
+    [*] --> Active_Execution: Task Assigned
+    Active_Execution --> Wait_Acknowledged: Model emits `dispatch_wait_ack`
+    Wait_Acknowledged --> Suspended_Frozen: KV Cache serialized & compute halted
+    Suspended_Frozen --> Resuming: Valid `dispatch_resume` received & verified
+    Resuming --> Active_Execution: KV Cache restored, prefix-cached
+    Active_Execution --> [*]: Task Completed
+    Suspended_Frozen --> [*]: Timeout / Error
+```
 
 4. Model-Level Requirements
 This is the core innovation of the protocol. The LLM inference engine must natively support the dispatch-wait state.
