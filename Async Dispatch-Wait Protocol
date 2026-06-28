@@ -1,155 +1,96 @@
 RFC 001: Async Dispatch-Wait Protocol for Agentic LLMs
-
+Version: 1.0.0
 Status: Proposed Standard
 Date: June 28, 2026
+Author: Paul Tretter
 Category: Model Architecture / Agentic Infrastructure
-
-1. Motivation
-Current agentic frameworks treat Large Language Models (LLMs) as stateless request/response endpoints. When an agent encounters a long-running external dependency (e.g., a sub-agent task, a human-in-the-loop approval, or a slow API call), the application layer is forced to manage the state. This architectural mismatch results in two critical failures:
-The Polling Tax: Orchestrators must repeatedly prompt the LLM to check status, regenerating the entire context window and wasting massive amounts of compute and tokens.
-The "Last Word" Hallucination: LLMs are autoregressive; they are trained to always produce a completion. When forced to wait, they often hallucinate tool outputs, simulate the next steps, or enter infinite reasoning loops to satisfy the autoregressive objective.
-
-The Dispatch-Wait Protocol solves this by elevating suspension from an application-layer hack to a native model-level execution state.
-
-2. Specification Goals and Non-Goals
-
+1. Abstract
+The Async Dispatch-Wait Protocol introduces a deterministic suspension and resumption mechanism for Large Language Model (LLM) inference engines. By elevating the await paradigm from the application layer to a native model-level execution state, this protocol allows sub-agents to explicitly yield execution control without hallucinating results, looping, or engaging in token-heavy polling behaviors. Execution is strictly blocked and KV cache state is preserved until a cryptographically signed dispatch_hash is returned, ensuring optimal token expenditure and deterministic state management in multi-agent systems.
+2. Motivation
+Current agentic frameworks treat LLMs as stateless request/response endpoints. When an agent encounters a long-running external dependency (e.g., a sub-agent task, human-in-the-loop approval, or slow API), the application layer manages the state. This architectural mismatch results in two critical failures:
+The Polling Tax: Orchestrators repeatedly prompt the LLM to check status, regenerating the entire context window and wasting massive amounts of compute and tokens.
+The "Last Word" Hallucination: LLMs are autoregressive; they are mathematically compelled to produce a completion. When forced to wait, they often hallucinate tool outputs, simulate the next steps, or enter infinite reasoning loops to satisfy the autoregressive objective.
+The Dispatch-Wait Protocol solves this by treating suspension as a native model-level execution state, effectively providing the yield and await keywords for LLM inference.
+3. Specification Goals and Non-Goals
 Goals
-
 Determinism: Strictly prevent the model from hallucinating or simulating the outcomes of awaited tasks.
 Zero-Token Waiting: Eliminate the polling tax; a suspended model consumes exactly zero tokens while waiting.
-
 Resumable Context: Preserve the exact computational state (KV Cache) so resumption requires no re-evaluation of prior context.
-
 Cryptographic Integrity: Ensure routing and state transitions are secure against injection and spoofing.
-
 Non-Goals
-
 General State Management: This protocol does not replace standard application state databases (e.g., Redis) for non-LLM workflow steps.
-
-UI/UX Rendering: This protocol handles the data and execution state, not the frontend rendering of "waiting" spinners.
-
 Cross-Vendor KV Portability: This spec assumes a homogeneous model environment; it does not define a standard for moving KV caches between different model architectures (e.g., Llama to Mistral).
-
-3. Protocol Overview & State Diagram
+4. Protocol Overview & State Diagram
 The protocol defines a strict 4-state execution lifecycle for the model inference engine.
+mermaid
 
-```mermaid
-stateDiagram-v2
-    [*] --> Active_Execution: Task Assigned
-    Active_Execution --> Wait_Acknowledged: Model emits `dispatch_wait_ack`
-    Wait_Acknowledged --> Suspended_Frozen: KV Cache serialized & compute halted
-    Suspended_Frozen --> Resuming: Valid `dispatch_resume` received & verified
-    Resuming --> Active_Execution: KV Cache restored, prefix-cached
-    Active_Execution --> [*]: Task Completed
-    Suspended_Frozen --> [*]: Timeout / Error
-```
 
-4. Model-Level Requirements
-This is the core innovation of the protocol. The LLM inference engine must natively support the dispatch-wait state.
 
-4.1. Transformer Execution State Update
+
+
+Code
+Preview
+5. Model-Level Requirements
+5.1. Transformer Execution State Update
 The model's generation loop must recognize a specialized control token or JSON structure (dispatch_wait_ack) as a hard stop sequence. Unlike standard stop tokens (e.g., <eos>) which simply end the generation, the dispatch_wait_ack token transitions the inference engine's internal state machine from GENERATING to SUSPENDING.
-
-4.2. Suspend/Resume Semantics
+5.2. Suspend/Resume Semantics
 Suspend: The inference engine must immediately abort the autoregressive decoding loop. It must not compute logits for the next token.
 Resume: The engine must accept the dispatch_resume payload, append it to the active context, and immediately re-enter the GENERATING state.
-
-4.3. KV Cache Preservation (The Zero-Re-evaluation Mandate)
-To achieve true zero-token waiting, the model must not re-process the prompt upon resumption.
-Freeze: Upon suspension, the Key-Value (KV) cache in VRAM/RAM is frozen and serialized to persistent storage (or kept in high-speed memory if capacity allows).
-Restore: Upon resumption, the KV cache is loaded back into the attention layers.
-Prefix Caching: The inference engine must utilize prefix caching (e.g., RadixAttention). It will only compute the KV vectors for the newly appended dispatch_resume tokens, completely bypassing the re-evaluation of the historical context.
-
-5. Cryptographic Rationale for dispatch_hash
-The dispatch_hash is not a simple UUID; it is a cryptographically signed routing token (e.g., an HMAC-SHA256 or JWT). This is required for production-grade security:
-
+6. KV Cache Management & Hardware Realities
+To achieve true zero-token waiting at scale, the inference engine must implement advanced memory management for suspended contexts.
+6.1. Tiered KV Eviction Strategy
+A KV cache for a 128k context window on a 70B parameter model requires significant VRAM. An orchestrator cannot hold thousands of suspended agents in VRAM. The protocol mandates a Tiered Storage Architecture:
+Hot (VRAM): Active, currently generating contexts.
+Warm (System RAM): Recently suspended contexts, kept in CPU memory for fast retrieval.
+Cold (NVMe SSD): Long-term suspended contexts, serialized to disk.
+Upon receiving a dispatch_resume, the inference engine must asynchronously page the KV cache up the tier ladder back into VRAM before generating the first token.
+6.2. Prefix Caching Optimization
+Systems utilizing PagedAttention or RadixAttention suffer from low cache hit rates if every agent has a highly unique, divergent context. To optimize resumption speed:
+Shared System Prefix: All agents under a specific orchestrator must share the exact same initial system prompt and tool definitions. This ensures the base KV cache remains "hot" in VRAM, meaning resumption only requires computing the KV vectors for the unique task-specific tokens.
+6.3. Context Rot and Invalidation
+If an agent suspends for 48 hours waiting for human approval, the world state may have changed. When it resumes, its frozen KV cache contains outdated premises.
+Context Invalidation Rule: If the dispatch_resume payload includes a context_staleness flag, the protocol mandates a partial KV cache eviction (forgetting the last 
+N
+N tokens of reasoning) or a mandatory "reflection" step before resuming generation.
+7. Cryptographic Rationale for dispatch_hash
+The dispatch_hash is a cryptographically signed routing token (e.g., HMAC-SHA256 or JWT). This is required for production-grade security:
 Routing Integrity: Ensures the dispatch_resume payload is injected into the exact, correct suspended context, preventing cross-talk between concurrent agent tasks.
-
 Impersonation Protection: The hash is signed by the Orchestrator's private key. The Model Inference Engine verifies the signature before accepting the resume command, ensuring a rogue sub-agent cannot fake a completion.
-
 Replay Protection: The signed payload includes a nonce and timestamp. The inference engine maintains a short-term bloom filter of processed nonces to reject replayed dispatch_resume messages.
-
-6. Safety Implications
-Elevating suspension to the model layer introduces new security considerations that must be mitigated:
-
-Prompt Injection via Resume Payload:
-Risk: An attacker compromises the external tool and injects malicious instructions into the dispatch_resume payload.
-Mitigation: The inference engine must treat the dispatch_resume payload as untrusted tool output. It should be wrapped in strict safety guardrails or processed by a secondary, smaller "sanitizer" model before being injected into the primary agent's context.
-
-Malicious Resumption (State Hijacking):
-Risk: An attacker attempts to resume a suspended context with altered parameters.
-Mitigation: Strict cryptographic verification (Section 5) at the inference engine level. If the signature fails, the engine drops the payload and triggers a dispatch_resume with "status": "security_violation".
-
-Denial of Service (Orphaned Contexts):
-Risk: An attacker triggers thousands of dispatches but never sends the resume, exhausting KV cache storage.
-Mitigation: The Orchestrator must enforce a strict Time-To-Live (TTL) on frozen KV caches. Expired caches are garbage-collected, and the model is injected with a timeout state.
-
-7. JSON Schema Definitions
-(Schemas remain as defined in the initial draft, but are now strictly enforced by the inference engine's parser rather than just the application layer).
-
-8. Reference Implementation
-Below is pseudo-code demonstrating the required logic for the core components.
-
-8.1. Model Inference Engine (KV Cache Management)
-
-```python
-class DispatchAwareInferenceEngine:
-    def generate(self, context, kv_cache=None):
-        # 1. Load frozen KV cache if resuming (Prefix Caching)
-        if kv_cache:
-            self.attention_layers.load_kv(kv_cache)
-            
-        for token in self.decode_next_tokens(context):
-            if self.parser.is_dispatch_wait_ack(token):
-                # 2. Suspend: Freeze and serialize KV cache
-                frozen_kv = self.attention_layers.freeze_kv()
-                storage.save(context.dispatch_hash, frozen_kv)
-                return SuspendSignal(hash=context.dispatch_hash)
-                
-            yield token
-
-    def resume(self, dispatch_hash, resume_payload):
-        # 3. Verify cryptographic signature
-        if not crypto.verify(resume_payload.signature):
-            raise SecurityViolationError()
-            
-        # 4. Restore KV cache and continue generation
-        kv_cache = storage.load(dispatch_hash)
-        new_context = append_to_context(resume_payload)
-        return self.generate(new_context, kv_cache=kv_cache)
-```
-
-
-8.2. Orchestrator (State & Routing)
-
-```python
-class AgentOrchestrator:
-    def dispatch_task(self, sub_agent, task):
-        dispatch_hash = crypto.generate_signed_hash(task_id)
-        context = build_context(task, dispatch_hash)
-        
-        # Trigger model generation
-        result = inference_engine.generate(context)
-        
-        if isinstance(result, SuspendSignal):
-            # Park the context, do not poll!
-            self.state_db.park_context(result.hash, status="WAITING")
-            return "Task suspended. Awaiting external event."
-
-    def handle_external_event(self, task_id, result_data):
-        dispatch_hash = self.state_db.get_hash(task_id)
-        resume_payload = build_resume_payload(dispatch_hash, result_data)
-        
-        # Trigger model resumption
-        inference_engine.resume(dispatch_hash, resume_payload)
-        self.state_db.unpark_context(dispatch_hash)
-```
-
-9. Future Extensions
-
-As agentic systems scale, the Dispatch-Wait Protocol will be extended to support:
-
+8. Safety Implications
+Elevating suspension to the model layer introduces new security considerations:
+Prompt Injection via Resume Payload: An attacker compromises an external tool and injects malicious instructions into the dispatch_resume payload. Mitigation: The inference engine must treat the payload as untrusted tool output, wrapping it in strict safety guardrails.
+Malicious Resumption (State Hijacking): An attacker attempts to resume a suspended context with altered parameters. Mitigation: Strict cryptographic verification at the inference engine level. If the signature fails, the engine drops the payload and triggers a security_violation state.
+Denial of Service (Orphaned Contexts): An attacker triggers thousands of dispatches but never sends the resume, exhausting storage. Mitigation: The Orchestrator must enforce a strict Time-To-Live (TTL) on frozen KV caches. Expired caches are garbage-collected.
+9. JSON Schema Definitions
+9.1. Orchestrator -> Sub-Agent (Initial Dispatch)
+json
+12345678910
+9.2. Sub-Agent -> Orchestrator (Suspension Acknowledgment)
+The model's only output when it realizes it must wait. The inference engine must trigger a STOP sequence immediately upon parsing this JSON.
+json
+123456789
+9.3. Orchestrator -> Sub-Agent (Resume Payload)
+json
+123456789101112
+10. Reference Implementation
+10.1. Model Inference Engine (KV Cache Management)
+python
+123456789101112131415161718192021222324
+10.2. Orchestrator (State & Routing)
+python
+1234567891011121314151617181920
+11. Ecosystem Positioning & Path to Adoption
+The Dispatch-Wait Protocol is not merely a feature; it is the missing primitive for the Agentic OS. Just as TCP/IP provided reliable packets, and HTTP provided request/response, Dispatch-Wait provides reliable, stateful, asynchronous agentic execution.
+Implementation Strategy
+To achieve adoption similar to the Model Context Protocol (MCP), the following steps are required:
+Target Inference Engine Maintainers: The application layer (LangChain, CrewAI) cannot implement this alone. We must engage the maintainers of vLLM, SGLang, and llama.cpp to build native support for KV cache serialization/deserialization tied to a routing hash.
+Proof of Concept (PoC): A reference implementation must be built using an engine that already supports KV cache offloading (e.g., SGLang's RadixAttention). A side-by-side token comparison (Standard Polling Agent vs. Dispatch-Wait Agent) will provide the empirical cost-savings metric required to drive adoption.
+12. Future Extensions
 Nested Dispatch (DAG Execution): Allowing a suspended sub-agent to itself dispatch a sub-task, creating a Directed Acyclic Graph of suspended contexts. The inference engine will manage a stack of KV caches.
-
 Distributed Dispatchers: Sharding frozen KV caches across a cluster of inference nodes, allowing a sub-agent suspended on Node A to be resumed on Node B (requires standardized KV cache serialization formats).
 Multi-Agent Consensus Waits: Extending the dispatch_wait_ack to support dispatch_wait_quorum, where a context remains frozen until 
+N
+N out of 
+M
+M external dispatches are resolved.
